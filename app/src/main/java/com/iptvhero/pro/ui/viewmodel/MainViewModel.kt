@@ -35,7 +35,12 @@ data class MainUiState(
     val pendingHeroHash: String? = null,
     val seasonsMap: Map<String, List<SeriesEpisode>> = emptyMap(),
     val isLoadingSeasons: Boolean = false,
-    val selectedSeriesTitle: String = ""
+    val selectedSeriesTitle: String = "",
+    val lastSelectedTab: String = "CANAIS",
+    val lastSelectedCategory: String = "",
+    val lastSearchQuery: String = "",
+    val lastFocusedIndex: Int = 0,
+    val lastOpenedChannelTitle: String = ""
 )
 
 class MainViewModel(
@@ -61,7 +66,47 @@ class MainViewModel(
     }
 
     init {
+        val savedTab = prefs.getString("last_selected_tab", "CANAIS") ?: "CANAIS"
+        val savedCat = prefs.getString("last_selected_category", "") ?: ""
+        val savedSearch = prefs.getString("last_search_query", "") ?: ""
+        val savedIndex = prefs.getInt("last_focused_index", 0)
+        val savedTitle = prefs.getString("last_opened_channel_title", "") ?: ""
+        _uiState.update {
+            it.copy(
+                lastSelectedTab = savedTab,
+                lastSelectedCategory = savedCat,
+                lastSearchQuery = savedSearch,
+                lastFocusedIndex = savedIndex,
+                lastOpenedChannelTitle = savedTitle
+            )
+        }
         loadActiveProfile()
+    }
+
+    fun saveNavigationHistory(
+        tab: String,
+        category: String,
+        search: String,
+        focusedIndex: Int,
+        openedTitle: String? = null
+    ) {
+        val titleToSave = openedTitle ?: _uiState.value.lastOpenedChannelTitle
+        prefs.edit()
+            .putString("last_selected_tab", tab)
+            .putString("last_selected_category", category)
+            .putString("last_search_query", search)
+            .putInt("last_focused_index", focusedIndex.coerceAtLeast(0))
+            .putString("last_opened_channel_title", titleToSave)
+            .apply()
+        _uiState.update {
+            it.copy(
+                lastSelectedTab = tab,
+                lastSelectedCategory = category,
+                lastSearchQuery = search,
+                lastFocusedIndex = focusedIndex.coerceAtLeast(0),
+                lastOpenedChannelTitle = titleToSave
+            )
+        }
     }
 
     fun loadActiveProfile() {
@@ -72,6 +117,10 @@ class MainViewModel(
         }
     }
 
+    /**
+     * Identico ao activateProfile(id) do index_2.html:
+     * Ativa o perfil e busca os canais/filmes/series da fonte (Xtream ou M3U) se necessario.
+     */
     fun selectProfile(profileId: Long, onReady: (() -> Unit)? = null) {
         _uiState.update {
             it.copy(
@@ -122,6 +171,10 @@ class MainViewModel(
         }
     }
 
+    /**
+     * Identico ao loadHeroList() do index_2.html:
+     * Baixa o arquivo all_in_one.txt com cache-bust, calcula SHA-256 e compara com a ultima versao.
+     */
     fun loadHeroListFromGithub(url: String = IptvRepository.HERO_LIST_URL, force: Boolean = false) {
         _uiState.update {
             it.copy(
@@ -200,6 +253,7 @@ class MainViewModel(
         activeProfile = active
         activeProfileIdFlow.value = active?.id
 
+
         _uiState.update {
             it.copy(
                 isLoading = false,
@@ -209,6 +263,10 @@ class MainViewModel(
         }
     }
 
+    /**
+     * Identico ao loadBulkTXT / processBulk do index_2.html:
+     * Cada linha vira um perfil de heroi individual.
+     */
     fun importBatchTxt(fileContent: String) {
         val lines = fileContent.split(Regex("\r?\n"))
             .map { it.trim() }
@@ -319,6 +377,7 @@ class MainViewModel(
                     }
                 }
 
+                // Fallback para listas M3U ou séries já listadas por episódio (ex: "Nome S01E02")
                 val baseName = extractSeriesBaseTitle(seriesChannel.title)
                 val matching = allSeriesItems.filter {
                     extractSeriesBaseTitle(it.title).equals(baseName, ignoreCase = true)
