@@ -306,34 +306,80 @@ class MainViewModel(
         }
     }
 
-    fun openSeriesSeasons(seriesChannel: ChannelEntity) {
+    fun openSeriesSeasons(seriesChannel: ChannelEntity, allSeriesItems: List<ChannelEntity> = emptyList()) {
         val profile = activeProfile ?: return
-        val seriesId = seriesChannel.remoteId ?: return
+        val seriesId = seriesChannel.remoteId
         _uiState.update {
             it.copy(
                 isLoadingSeasons = true,
                 selectedSeriesTitle = seriesChannel.title,
-                seasonsMap = emptyMap()
+                seasonsMap = emptyMap(),
+                errorMessage = null
             )
         }
         viewModelScope.launch {
             try {
-                val seasons = repository.fetchSeriesSeasons(profile, seriesId)
+                if (!seriesId.isNullOrBlank() && !profile.server.isNullOrBlank()) {
+                    val seasons = repository.fetchSeriesSeasons(profile, seriesId)
+                    if (seasons.isNotEmpty()) {
+                        _uiState.update {
+                            it.copy(
+                                isLoadingSeasons = false,
+                                seasonsMap = seasons
+                            )
+                        }
+                        return@launch
+                    }
+                }
+
+                // Fallback para listas M3U ou séries já listadas por episódio (ex: "Nome S01E02")
+                val baseName = extractSeriesBaseTitle(seriesChannel.title)
+                val matching = allSeriesItems.filter {
+                    extractSeriesBaseTitle(it.title).equals(baseName, ignoreCase = true)
+                }.ifEmpty { listOf(seriesChannel) }
+
+                val grouped = linkedMapOf<String, MutableList<SeriesEpisode>>()
+                val seRegex = Regex("(?i)(?:S|T)(\\d{1,2})\\s*(?:E|EP)?(\\d{1,3})")
+                matching.forEachIndexed { idx, item ->
+                    val m = seRegex.find(item.title)
+                    val seasonKey = m?.groupValues?.getOrNull(1)?.toIntOrNull()?.toString() ?: "1"
+                    val epNum = m?.groupValues?.getOrNull(2)?.toIntOrNull() ?: (idx + 1)
+                    val ext = item.url.substringAfterLast('.', "mp4").substringBefore('?').takeIf { it.length in 2..5 } ?: "mp4"
+                    grouped.getOrPut(seasonKey) { mutableListOf() }.add(
+                        SeriesEpisode(
+                            id = "DIRECT_URL::${item.url}",
+                            episodeNum = epNum,
+                            title = item.title,
+                            extension = ext,
+                            duration = null
+                        )
+                    )
+                }
+
+                val sortedSeasons = grouped.mapValues { (_, list) -> list.sortedBy { it.episodeNum } }
                 _uiState.update {
                     it.copy(
                         isLoadingSeasons = false,
-                        seasonsMap = seasons
+                        seasonsMap = sortedSeasons
                     )
                 }
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
                         isLoadingSeasons = false,
-                        errorMessage = "Erro ao carregar episodios: ${e.message}"
+                        errorMessage = "Erro ao carregar episodios: ${e.message ?: "Falha"}"
                     )
                 }
             }
         }
+    }
+
+    private fun extractSeriesBaseTitle(rawTitle: String): String {
+        return rawTitle
+            .replace(Regex("(?i)\\s*[-–:]?\\s*(?:S|T)\\d{1,2}\\s*(?:E|EP)?\\d{1,3}.*$"), "")
+            .replace(Regex("(?i)\\s*Temporada\\s*\\d+.*$"), "")
+            .trim()
+            .ifBlank { rawTitle.trim() }
     }
 
     fun closeSeriesSeasons() {
@@ -341,6 +387,9 @@ class MainViewModel(
     }
 
     fun buildEpisodeStreamUrl(episode: SeriesEpisode): String? {
+        if (episode.id.startsWith("DIRECT_URL::")) {
+            return episode.id.removePrefix("DIRECT_URL::")
+        }
         val profile = activeProfile ?: return null
         val cleanServer = profile.server?.trimEnd('/') ?: return null
         val encUser = URLEncoder.encode(profile.user.orEmpty(), "UTF-8")
