@@ -45,6 +45,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
@@ -92,14 +94,16 @@ fun MainScreen(
     val uiState by viewModel.uiState.collectAsState()
     val activeProfile = viewModel.activeProfile
 
-    var selectedTab by remember { mutableStateOf("CANAIS") }
-    var selectedCategory by remember { mutableStateOf("") }
+    var selectedTab by remember { mutableStateOf(uiState.lastSelectedTab) }
+    var selectedCategory by remember { mutableStateOf(uiState.lastSelectedCategory) }
     val categoryHistory = remember { mutableStateListOf<String>() }
     val focusHistoryByKey = remember { mutableStateMapOf<String, Int>() }
-    var searchQuery by remember { mutableStateOf("") }
+    var searchQuery by remember { mutableStateOf(uiState.lastSearchQuery) }
     var showProfileDialog by remember { mutableStateOf(false) }
-    var isPlayerActive by remember { mutableStateOf(false) }
+    var isPlayerActive by remember { mutableStateOf(!uiState.currentStreamUrl.isNullOrBlank()) }
     var selectedSeasonKey by remember { mutableStateOf("") }
+    var hasRestoredInitialHistory by remember { mutableStateOf(false) }
+    val lastFocusedItemRequester = remember { FocusRequester() }
 
     val gridState = rememberLazyGridState()
 
@@ -116,6 +120,22 @@ fun MainScreen(
     LaunchedEffect(uiState.seasonsMap) {
         if (uiState.seasonsMap.isNotEmpty() && !uiState.seasonsMap.containsKey(selectedSeasonKey)) {
             selectedSeasonKey = uiState.seasonsMap.keys.first()
+        }
+    }
+
+    LaunchedEffect(channels.size, uiState.lastSelectedTab, uiState.lastSelectedCategory, uiState.lastFocusedIndex) {
+        if (!hasRestoredInitialHistory && channels.isNotEmpty()) {
+            val restTab = uiState.lastSelectedTab.ifBlank { "CANAIS" }
+            val restCat = uiState.lastSelectedCategory
+            val restSearch = uiState.lastSearchQuery
+            val restIndex = uiState.lastFocusedIndex.coerceAtLeast(0)
+            selectedTab = restTab
+            selectedCategory = restCat
+            searchQuery = restSearch
+            focusHistoryByKey["$restTab|$restCat"] = restIndex
+            gridState.scrollToItem(restIndex)
+            runCatching { lastFocusedItemRequester.requestFocus() }
+            hasRestoredInitialHistory = true
         }
     }
 
@@ -164,6 +184,13 @@ fun MainScreen(
 
     fun handleItemClick(channel: ChannelEntity, index: Int) {
         focusHistoryByKey[currentScopeKey()] = index
+        viewModel.saveNavigationHistory(
+            tab = selectedTab,
+            category = selectedCategory,
+            search = searchQuery,
+            focusedIndex = index,
+            openedTitle = channel.title
+        )
         val isSeries = selectedTab == "SERIES" || channel.contentType.equals("SERIES", ignoreCase = true)
         if (isSeries) {
             selectedSeasonKey = ""
@@ -294,7 +321,14 @@ fun MainScreen(
                             selectedCategory = ""
                             categoryHistory.clear()
                             searchQuery = ""
+                            val targetIdx = focusHistoryByKey["$tab|"] ?: 0
                             restoreScrollForScope("$tab|")
+                            viewModel.saveNavigationHistory(
+                                tab = tab,
+                                category = "",
+                                search = "",
+                                focusedIndex = targetIdx
+                            )
                         }
                         .padding(horizontal = 18.dp, vertical = 8.dp)
                 ) {
@@ -391,7 +425,15 @@ fun MainScreen(
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(if (selectedCategory.isBlank()) GoldFocus.copy(alpha = 0.20f) else Color(0xFF141B2E))
-                                .heroFocusable(RoundedCornerShape(8.dp)) { selectCategoryTracked("") }
+                                .heroFocusable(RoundedCornerShape(8.dp)) {
+                                    selectCategoryTracked("")
+                                    viewModel.saveNavigationHistory(
+                                        tab = selectedTab,
+                                        category = "",
+                                        search = searchQuery,
+                                        focusedIndex = focusHistoryByKey["$selectedTab|"] ?: 0
+                                    )
+                                }
                                 .padding(horizontal = 10.dp, vertical = 8.dp),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
@@ -412,7 +454,15 @@ fun MainScreen(
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(if (isCatSelected) GoldFocus.copy(alpha = 0.20f) else Color(0xFF141B2E))
-                                .heroFocusable(RoundedCornerShape(8.dp)) { selectCategoryTracked(catName) }
+                                .heroFocusable(RoundedCornerShape(8.dp)) {
+                                    selectCategoryTracked(catName)
+                                    viewModel.saveNavigationHistory(
+                                        tab = selectedTab,
+                                        category = catName,
+                                        search = searchQuery,
+                                        focusedIndex = focusHistoryByKey["$selectedTab|$catName"] ?: 0
+                                    )
+                                }
                                 .padding(horizontal = 10.dp, vertical = 8.dp),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
@@ -537,11 +587,26 @@ fun MainScreen(
                                 val isSeriesCard = selectedTab == "SERIES" || channel.contentType.equals("SERIES", ignoreCase = true)
                                 val isVodOrSeries = isPosterTab || isSeriesCard
 
+                                val isLastAccessed = index == uiState.lastFocusedIndex ||
+                                    channel.title.equals(uiState.lastOpenedChannelTitle, ignoreCase = true)
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(12.dp))
-                                        .background(if (isSelectedItem) Color(0xFF19233E) else Color(0xFF13192B))
+                                        .background(
+                                            when {
+                                                isSelectedItem -> Color(0xFF19233E)
+                                                isLastAccessed -> Color(0xFF172038)
+                                                else -> Color(0xFF13192B)
+                                            }
+                                        )
+                                        .then(
+                                            if (index == uiState.lastFocusedIndex) {
+                                                Modifier.focusRequester(lastFocusedItemRequester)
+                                            } else {
+                                                Modifier
+                                            }
+                                        )
                                         .heroFocusable(RoundedCornerShape(12.dp)) {
                                             handleItemClick(channel, index)
                                         }
