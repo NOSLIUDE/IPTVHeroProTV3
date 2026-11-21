@@ -110,7 +110,9 @@ fun AppNavigation(
                     viewModel.dismissPendingHeroList()
                 },
                 onSelectProfile = { profileId ->
-                    viewModel.selectProfile(profileId)
+                    viewModel.selectProfile(profileId) {
+                        navigateTo("main")
+                    }
                 },
                 onDeleteProfile = { profileId ->
                     viewModel.deleteProfile(profileId)
